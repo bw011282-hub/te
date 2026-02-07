@@ -11,40 +11,59 @@ const ipToTopicMap = new Map();
 
 /**
  * Sjekker om et topic allerede eksisterer for en IP-adresse
+ * Sjekker gjennom alle topics i supergruppen (med paginering)
  */
 async function findExistingTopicForIP(ipAddress) {
   try {
-    // Prøv å liste alle topics i supergruppen
-    const telegramApiUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getForumTopics`;
-    
-    const response = await fetch(telegramApiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        offset: 0,
-        limit: 100, // Sjekk opptil 100 topics
-      }),
-    });
+    const topicName = `IP: ${ipAddress}`;
+    let offset = 0;
+    const limit = 100;
+    let hasMore = true;
 
-    if (!response.ok) {
-      // Hvis API ikke støtter getForumTopics, returner null
-      return null;
-    }
-
-    const result = await response.json();
-    if (result.ok && result.result && result.result.topics) {
-      const topicName = `IP: ${ipAddress}`;
-      // Søk etter et topic med samme navn
-      const existingTopic = result.result.topics.find(
-        topic => topic.name === topicName
-      );
+    // Sjekk gjennom alle topics med paginering
+    while (hasMore) {
+      const telegramApiUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getForumTopics`;
       
-      if (existingTopic) {
-        console.log(`Fant eksisterende topic for IP ${ipAddress}: ${existingTopic.message_thread_id}`);
-        return existingTopic.message_thread_id;
+      const response = await fetch(telegramApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          offset: offset,
+          limit: limit,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        // Hvis API ikke støtter getForumTopics eller feiler, returner null
+        console.log(`getForumTopics feilet: ${errorData.description || response.statusText}`);
+        return null;
+      }
+
+      const result = await response.json();
+      
+      if (result.ok && result.result && result.result.topics) {
+        // Søk etter et topic med samme navn
+        const existingTopic = result.result.topics.find(
+          topic => topic.name === topicName
+        );
+        
+        if (existingTopic) {
+          console.log(`Fant eksisterende topic for IP ${ipAddress}: ${existingTopic.message_thread_id}`);
+          return existingTopic.message_thread_id;
+        }
+
+        // Sjekk om det er flere topics å hente
+        if (result.result.topics.length < limit) {
+          hasMore = false;
+        } else {
+          offset += limit;
+        }
+      } else {
+        hasMore = false;
       }
     }
     
@@ -79,6 +98,17 @@ async function getOrCreateTopicForIP(ipAddress) {
     return topicId;
   } catch (error) {
     console.error(`Kunne ikke opprette topic for IP ${ipAddress}:`, error);
+    
+    // Hvis feilen indikerer at topic allerede eksisterer, prøv å finne det igjen
+    if (error.message && error.message.includes('already exists')) {
+      console.log(`Topic eksisterer allerede for IP ${ipAddress}, søker på nytt...`);
+      const existingTopicId = await findExistingTopicForIP(ipAddress);
+      if (existingTopicId) {
+        ipToTopicMap.set(ipAddress, existingTopicId);
+        return existingTopicId;
+      }
+    }
+    
     // Fallback: bruk null (ingen topic) hvis opprettelse feiler
     return null;
   }
@@ -104,6 +134,16 @@ async function createTopicForIP(ipAddress) {
 
   if (!response.ok) {
     const errorData = await response.json();
+    
+    // Hvis topic allerede eksisterer (selv om vi ikke fant det), prøv å finne det igjen
+    if (errorData.description && errorData.description.includes('already exists')) {
+      console.log(`Topic for IP ${ipAddress} eksisterer allerede, søker etter det...`);
+      const existingTopicId = await findExistingTopicForIP(ipAddress);
+      if (existingTopicId) {
+        return existingTopicId;
+      }
+    }
+    
     // Hvis topics ikke er støttet, returner null
     if (errorData.error_code === 400) {
       throw new Error('Topics ikke støttet - sjekk at gruppen er en supergruppe med topics aktivert');
@@ -112,6 +152,7 @@ async function createTopicForIP(ipAddress) {
   }
 
   const result = await response.json();
+  console.log(`Opprettet nytt topic for IP ${ipAddress}: ${result.result.message_thread_id}`);
   return result.result.message_thread_id;
 }
 
