@@ -10,16 +10,69 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // Supergruppe ID (må v�
 const ipToTopicMap = new Map();
 
 /**
+ * Sjekker om et topic allerede eksisterer for en IP-adresse
+ */
+async function findExistingTopicForIP(ipAddress) {
+  try {
+    // Prøv å liste alle topics i supergruppen
+    const telegramApiUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getForumTopics`;
+    
+    const response = await fetch(telegramApiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        offset: 0,
+        limit: 100, // Sjekk opptil 100 topics
+      }),
+    });
+
+    if (!response.ok) {
+      // Hvis API ikke støtter getForumTopics, returner null
+      return null;
+    }
+
+    const result = await response.json();
+    if (result.ok && result.result && result.result.topics) {
+      const topicName = `IP: ${ipAddress}`;
+      // Søk etter et topic med samme navn
+      const existingTopic = result.result.topics.find(
+        topic => topic.name === topicName
+      );
+      
+      if (existingTopic) {
+        console.log(`Fant eksisterende topic for IP ${ipAddress}: ${existingTopic.message_thread_id}`);
+        return existingTopic.message_thread_id;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error(`Feil ved søk etter eksisterende topic for IP ${ipAddress}:`, error);
+    return null;
+  }
+}
+
+/**
  * Oppretter eller henter topic ID for en IP-adresse
  * Hvis det er en ny IP, oppretter vi et nytt topic i supergruppen
  */
 async function getOrCreateTopicForIP(ipAddress) {
-  // Hvis vi allerede har en topic_id for denne IP-en, returner den
+  // Først sjekk om vi har det i cache (for denne invokasjonen)
   if (ipToTopicMap.has(ipAddress)) {
     return ipToTopicMap.get(ipAddress);
   }
 
-  // For nye IP-adresser, opprett et nytt topic i supergruppen
+  // Sjekk om et topic allerede eksisterer i supergruppen
+  const existingTopicId = await findExistingTopicForIP(ipAddress);
+  if (existingTopicId) {
+    ipToTopicMap.set(ipAddress, existingTopicId);
+    return existingTopicId;
+  }
+
+  // Hvis ingen eksisterende topic, opprett et nytt
   try {
     const topicId = await createTopicForIP(ipAddress);
     ipToTopicMap.set(ipAddress, topicId);
